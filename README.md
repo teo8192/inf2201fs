@@ -23,7 +23,9 @@ mount.inf2201fs mountpoint
 ```
 
 The default image file is `image`.
-You may specify another one with the `--image` flag.
+You may specify another one with the `--image` flag (this is buggy).
+
+The mountpoint needs to be a existing directory.
 
 To unmount the filesystem, use either `fusermount -u [mountpoint]` or `umount [mountpoint]`.
 It is recommended to use `fusermount -u`.
