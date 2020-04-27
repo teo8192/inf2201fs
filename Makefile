@@ -14,10 +14,10 @@ $(TARGET): $(SOURCE)
 	gcc -o $@ $(SOURCE) $(CFLAGS)
 
 umnt:
-	fusermount -u $(MNT_DIR) 
+	df -a --output=source | grep -q $(TARGET) && fusermount -u $(MNT_DIR) || echo "Already unmounted"
 
 clean: umnt
-	-rm $(TARGET)
+	rm $(TARGET) || echo "Nothing to clean"
 
 mnt: $(TARGET)
 	./$(TARGET) $(MNT_DIR)
