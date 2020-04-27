@@ -138,6 +138,13 @@ static int fs_getattr(const char *path, struct stat *stbuf, struct fuse_file_inf
 		// root directory
 		stbuf->st_mode = S_IFDIR | 0755;
 		stbuf->st_nlink = 2;
+		stbuf->st_size = 0;
+
+		for (int i = 0, pos = 0; i < num_files; ++i, pos += DIR_SIZE(FILE_AT(pos)))
+			stbuf->st_size += FILE_AT(pos)->size;
+
+		stbuf->st_size *= SECTOR_SIZE;
+
 		res = 0;
 	} else if (options.version > 0) {
 		// try to find the file
@@ -288,12 +295,31 @@ static int fs_read(const char *path, char *buf, size_t size, off_t offset, struc
 	return size;
 }
 
+static int fs_stat(const char *path, struct statvfs *stat)
+{
+	int size = 0;
+
+	if (strcmp(path, "/") != 0)
+		return -ENOENT;
+
+	memset(stat, 0, sizeof(struct statvfs));
+
+	for (int i = 0, pos = 0; i < num_files; ++i, pos += DIR_SIZE(FILE_AT(pos)))
+		size += FILE_AT(pos)->size;
+
+	stat->f_bsize = size * SECTOR_SIZE;
+	stat->f_namemax = SECTOR_SIZE - sizeof(struct directory);
+
+	return 0;
+}
+
 static const struct fuse_operations fs_oper = {
 	.init = fs_init,
 	.getattr = fs_getattr,
 	.readdir = fs_readdir,
 	.open = fs_open,
-	.read = fs_read
+	.read = fs_read,
+	.statfs = fs_stat,
 };
 
 static void show_help(const char *progname)
