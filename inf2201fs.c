@@ -46,13 +46,30 @@ static int num_files;
 
 #define FILE_AT(p) ((struct directory*)(&file_dir_bytes[p]))
 
+static void update_dir(void)
+{
+	static int kernel_size = -1;
+	short buf[SECTOR_SIZE >> 1];
+	FILE *image;
+	image = fopen(options.image, "rb");
+
+	assert(image > 0);
+
+	if (kernel_size < 0) {
+		fread(buf, SECTOR_SIZE, 1, image); 
+		kernel_size = buf[1];
+	}
+
+	fseek(image, (kernel_size + 1) * SECTOR_SIZE, SEEK_SET);
+	fread(file_dir_bytes, SECTOR_SIZE, 1, image);
+
+	fclose(image);
+}
+
 static void *fs_init(struct fuse_conn_info *conn,
 					 struct fuse_config *cfg)
 {
-	int kernel_size;
-	short buf[SECTOR_SIZE >> 1];
 	(void) conn;
-	FILE *image;
 	int pos;
 
 	cfg->kernel_cache = 0;
@@ -60,23 +77,15 @@ static void *fs_init(struct fuse_conn_info *conn,
 	num_files = 0;
 
 	// TODO: better handeling
-	image = fopen(options.image, "rb");
-
-	assert(image > 0);
-	
-	fread(buf, SECTOR_SIZE, 1, image); 
-	kernel_size = buf[1];
-
-	fseek(image, (kernel_size + 1) * SECTOR_SIZE, SEEK_SET);
-	fread(file_dir_bytes, SECTOR_SIZE, 1, image);
+	update_dir();
 
 	file_dir = file_dir_bytes;
 
 	if (options.version < 0) {
 		// figure out shit
 		options.version = 1;
-		for (char *c = &file_dir_bytes[sizeof(struct directory)]; c; ++c)
-			if (*c <= 'a' || *c >= 'Z') {
+		for (char *c = &file_dir_bytes[sizeof(struct directory)]; *c != '\0'; ++c)
+			if (*c <= 0x019 || *c >= 0x07f) {
 				options.version = 0;
 				break;
 			}
@@ -87,8 +96,6 @@ static void *fs_init(struct fuse_conn_info *conn,
 		pos += options.version == 0 ? sizeof(struct directory) : DIR_SIZE(FILE_AT(pos));
 
 
-	fclose(image);
-
 	return NULL;
 }
 
@@ -97,6 +104,8 @@ static int fs_getattr(const char *path, struct stat *stbuf, struct fuse_file_inf
 	(void) fi;
 	int res = 0;
 	int file;
+
+	update_dir();
 
 	if (options.version == 0) {
 		for (int i = 1; i < strlen(path); ++i)
@@ -145,6 +154,8 @@ static int fs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	if (strcmp(path, "/") != 0)
 		return -ENOENT;
 
+	update_dir();
+
 	for (int i = 0, pos = 0; i < num_files; ++i) {
 		if (options.version == 0) {
 			sprintf(filename, "%d", i);
@@ -161,6 +172,8 @@ static int fs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 static int fs_open(const char *path, struct fuse_file_info *fi)
 {
 	int file, ret;
+
+	update_dir();
 
 	// check if file exists
 	if (options.version == 0) {
@@ -199,6 +212,8 @@ static int fs_read(const char *path, char *buf, size_t size, off_t offset, struc
 	int file = 0;
 	FILE *image;
 	struct directory *f;
+
+	update_dir();
 
 	if (options.version == 0) {
 		for (int i = 1; i < strlen(path); ++i)
