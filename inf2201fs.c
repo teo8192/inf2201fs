@@ -51,6 +51,10 @@ static void update_dir(void)
 	static int kernel_size = -1;
 	short buf[SECTOR_SIZE >> 1];
 	FILE *image;
+	int pos;
+
+	num_files = 0;
+
 	image = fopen(options.image, "rb");
 
 	assert(image > 0);
@@ -64,6 +68,11 @@ static void update_dir(void)
 	fread(file_dir_bytes, SECTOR_SIZE, 1, image);
 
 	fclose(image);
+
+	if (options.version >= 0)
+		for (num_files = 0, pos = 0; num_files < MAX_NUM_FILES && 
+				(FILE_AT(pos)->location | FILE_AT(pos)->size) != 0; ++num_files)
+			pos += options.version == 0 ? sizeof(struct directory) : DIR_SIZE(FILE_AT(pos));
 }
 
 static void *fs_init(struct fuse_conn_info *conn,
@@ -72,29 +81,30 @@ static void *fs_init(struct fuse_conn_info *conn,
 	(void) conn;
 	int pos;
 
+	// the image file might be changed by bochs, so this is set to 0
 	cfg->kernel_cache = 0;
-
-	num_files = 0;
 
 	// TODO: better handeling
 	update_dir();
 
 	file_dir = file_dir_bytes;
 
+	// determine the version
 	if (options.version < 0) {
-		// figure out shit
 		options.version = 1;
+		// check if there exits a filename
+		// this is prone to errors, since the sice the location might be an ascii value.
 		for (char *c = &file_dir_bytes[sizeof(struct directory)]; *c != '\0'; ++c)
-			if (*c <= 0x019 || *c >= 0x07f) {
+			if (*c <= 0x019 || *c >= 0x07f) { // found a character that is not supported by the FS
 				options.version = 0;
 				break;
 			}
 	}
 
+	// count the numer of files
 	for (num_files = 0, pos = 0; num_files < MAX_NUM_FILES && 
 			(FILE_AT(pos)->location | FILE_AT(pos)->size) != 0; ++num_files)
 		pos += options.version == 0 ? sizeof(struct directory) : DIR_SIZE(FILE_AT(pos));
-
 
 	return NULL;
 }
@@ -105,8 +115,10 @@ static int fs_getattr(const char *path, struct stat *stbuf, struct fuse_file_inf
 	int res = 0;
 	int file;
 
+	// maybe the file system has changed, gotta check
 	update_dir();
 
+	// if version 0, check if filename is a number
 	if (options.version == 0) {
 		for (int i = 1; i < strlen(path); ++i)
 			if (path[i] > '9' || path[i] < '0')
@@ -119,10 +131,12 @@ static int fs_getattr(const char *path, struct stat *stbuf, struct fuse_file_inf
 
 	memset(stbuf, 0, sizeof(struct stat));
 	if (strcmp(path, "/") == 0) {
+		// root directory
 		stbuf->st_mode = S_IFDIR | 0755;
 		stbuf->st_nlink = 2;
 		res = 0;
 	} else if (options.version > 0) {
+		// try to find the file
 		for (int pos = 0; (FILE_AT(pos)->location | FILE_AT(pos)->size) != 0; pos += DIR_SIZE(FILE_AT(pos))) {
 			if (strcmp(FILE_AT(pos)->name, path + 1) == 0) {
 				stbuf->st_mode = S_IFREG | 0444;
@@ -133,6 +147,7 @@ static int fs_getattr(const char *path, struct stat *stbuf, struct fuse_file_inf
 			}
 		}
 	} else if (file < num_files && file >= 0) {
+		// easier to find file in the old system
 		stbuf->st_mode = S_IFREG | 0444;
 		stbuf->st_nlink = 1;
 		stbuf->st_size = file_dir[file].size * SECTOR_SIZE;
@@ -151,11 +166,14 @@ static int fs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	(void) flags;
 	char filename[256];
 
+	// the file system is single layered
 	if (strcmp(path, "/") != 0)
 		return -ENOENT;
 
+	// maybe the fs has changed
 	update_dir();
 
+	// list all the files
 	for (int i = 0, pos = 0; i < num_files; ++i) {
 		if (options.version == 0) {
 			sprintf(filename, "%d", i);
@@ -173,10 +191,12 @@ static int fs_open(const char *path, struct fuse_file_info *fi)
 {
 	int file, ret;
 
+	// maybe the file system has changed?
 	update_dir();
 
 	// check if file exists
 	if (options.version == 0) {
+		// check if the name is a number and if the number is within the directory size
 		for (int i = 1; i < strlen(path); ++i)
 			if (path[i] > '9' || path[i] < '0')
 				return -ENOENT;
@@ -188,6 +208,7 @@ static int fs_open(const char *path, struct fuse_file_info *fi)
 			return -ENOENT;
 	} else {
 		ret = -ENOENT;
+		// find the name in the file directory
 		for (int i = 0, pos = 0; i < num_files; ++i) {
 			if (strcmp(FILE_AT(pos)->name, path + 1) == 0) {
 				ret = 0;
@@ -199,6 +220,7 @@ static int fs_open(const char *path, struct fuse_file_info *fi)
 			return ret;
 	}
 
+	// only see, no tuche
 	if ((fi->flags & O_ACCMODE) != O_RDONLY)
 		return -EACCES;
 
@@ -213,8 +235,10 @@ static int fs_read(const char *path, char *buf, size_t size, off_t offset, struc
 	FILE *image;
 	struct directory *f;
 
+	// maybe this shiet has changed
 	update_dir();
 
+	// veify that file exists
 	if (options.version == 0) {
 		for (int i = 1; i < strlen(path); ++i)
 			if (path[i] > '9' || path[i] < '0')
@@ -238,13 +262,15 @@ static int fs_read(const char *path, char *buf, size_t size, off_t offset, struc
 			return ret;
 	}
 
+	// pointer to the correct file directory entry
 	f = options.version == 0 ? &file_dir[file] : FILE_AT(file);
 
 	len = f->size * SECTOR_SIZE;
-
 	if (offset < len) {
 		if (offset + size > len)
 			size = len - offset;
+
+		// actually read from the file
 
 		image = fopen(options.image, "rb");
 
@@ -280,6 +306,7 @@ int main(int argc, char *argv[])
 	if (getcwd(cwd, sizeof(cwd)) == NULL)
 		return 1;
 
+	// default file is image file in the current directory
 	len = strlen(cwd);
 	for (int idx = 0; idx < strlen(def_file); ++idx)
 		cwd[len++] = def_file[idx];
@@ -287,6 +314,7 @@ int main(int argc, char *argv[])
 	options.image = strdup(cwd);
 	options.version = -1;
 
+	// the name is inf2201fs
 	argv[0] = name;
 
 	if (fuse_opt_parse(&args, &options, option_spec, NULL) == -1)
