@@ -192,14 +192,16 @@ static void show_help(const char *progname)
 
 int main(int argc, char *argv[])
 {
-	int ret;
-	char cwd[PATH_MAX];
+	int ret, len;
+	char cwd[PATH_MAX], def_file[] = "/image";
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
 
 	if (getcwd(cwd, sizeof(cwd)) == NULL)
 		return 1;
 
-	sprintf(cwd, "%s/image", cwd);
+	len = strlen(cwd);
+	for (int idx = 0; idx < strlen(def_file); ++idx)
+		cwd[len++] = def_file[idx];
 
 	options.image = strdup(cwd);
 	options.version = -1;
@@ -212,6 +214,8 @@ int main(int argc, char *argv[])
 		assert(fuse_opt_add_arg(&args, "--help") == 0);
 		args.argv[0][0] = '\0';
 	}
+
+	printf("Image: %s\n", options.image);
 
 	ret = fuse_main(args.argc, args.argv, &fs_oper, NULL);
 	fuse_opt_free_args(&args);
