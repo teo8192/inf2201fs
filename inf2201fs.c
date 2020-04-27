@@ -30,15 +30,21 @@ static const struct fuse_opt option_spec[] = {
 struct directory {
 	int location;
 	int size;
-};
+	char name[0];
+} __attribute__ ((packed));
+
+#define DIR_SIZE(d) (sizeof(struct directory) + strlen(d->name) + 1)
 
 enum {
 	SECTOR_SIZE = 512,
 	MAX_NUM_FILES = (SECTOR_SIZE / sizeof(struct directory))
 };
 
-static struct directory file_dir[MAX_NUM_FILES];
+static char file_dir_bytes[SECTOR_SIZE];
+static struct directory *file_dir;
 static int num_files;
+
+#define FILE_AT(p) ((struct directory*)(&file_dir_bytes[p]))
 
 static void *fs_init(struct fuse_conn_info *conn,
 					 struct fuse_config *cfg)
@@ -47,11 +53,13 @@ static void *fs_init(struct fuse_conn_info *conn,
 	short buf[SECTOR_SIZE >> 1];
 	(void) conn;
 	FILE *image;
+	int pos;
 
 	cfg->kernel_cache = 0;
 
 	num_files = 0;
 
+	// TODO: better handeling
 	image = fopen(options.image, "rb");
 
 	assert(image > 0);
@@ -60,9 +68,24 @@ static void *fs_init(struct fuse_conn_info *conn,
 	kernel_size = buf[1];
 
 	fseek(image, (kernel_size + 1) * SECTOR_SIZE, SEEK_SET);
-	fread(file_dir, SECTOR_SIZE, 1, image);
+	fread(file_dir_bytes, SECTOR_SIZE, 1, image);
 
-	for (num_files = 0; num_files < MAX_NUM_FILES && (file_dir[num_files].location | file_dir[num_files].size) != 0; ++num_files);
+	file_dir = file_dir_bytes;
+
+	if (options.version < 0) {
+		// figure out shit
+		options.version = 1;
+		for (char *c = &file_dir_bytes[sizeof(struct directory)]; c; ++c)
+			if (*c <= 'a' || *c >= 'Z') {
+				options.version = 0;
+				break;
+			}
+	}
+
+	for (num_files = 0, pos = 0; num_files < MAX_NUM_FILES && 
+			(FILE_AT(pos)->location | FILE_AT(pos)->size) != 0; ++num_files)
+		pos += options.version == 0 ? sizeof(struct directory) : DIR_SIZE(FILE_AT(pos));
+
 
 	fclose(image);
 
@@ -75,17 +98,31 @@ static int fs_getattr(const char *path, struct stat *stbuf, struct fuse_file_inf
 	int res = 0;
 	int file;
 
-	for (int i = 1; i < strlen(path); ++i)
-		if (path[i] > '9' || path[i] < '0')
-			return -ENOENT;
+	if (options.version == 0) {
+		for (int i = 1; i < strlen(path); ++i)
+			if (path[i] > '9' || path[i] < '0')
+				return -ENOENT;
 
-	if (strlen(path) > 1)
-		file = atoi(path+1);
+		if (strlen(path) > 1)
+			file = atoi(path+1);
+	} else
+		res = -ENOENT;
 
 	memset(stbuf, 0, sizeof(struct stat));
 	if (strcmp(path, "/") == 0) {
 		stbuf->st_mode = S_IFDIR | 0755;
 		stbuf->st_nlink = 2;
+		res = 0;
+	} else if (options.version > 0) {
+		for (int pos = 0; (FILE_AT(pos)->location | FILE_AT(pos)->size) != 0; pos += DIR_SIZE(FILE_AT(pos))) {
+			if (strcmp(FILE_AT(pos)->name, path + 1) == 0) {
+				stbuf->st_mode = S_IFREG | 0444;
+				stbuf->st_nlink = 1;
+				stbuf->st_size = FILE_AT(pos)->size * SECTOR_SIZE;
+				res = 0;
+				break;
+			}
+		}
 	} else if (file < num_files && file >= 0) {
 		stbuf->st_mode = S_IFREG | 0444;
 		stbuf->st_nlink = 1;
@@ -108,9 +145,14 @@ static int fs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	if (strcmp(path, "/") != 0)
 		return -ENOENT;
 
-	for (int i = 0; i < num_files; ++i) {
-		sprintf(filename, "%d", i);
-		filler(buf, filename, NULL, 0, 0);
+	for (int i = 0, pos = 0; i < num_files; ++i) {
+		if (options.version == 0) {
+			sprintf(filename, "%d", i);
+			filler(buf, filename, NULL, 0, 0);
+		} else {
+			filler(buf, FILE_AT(pos)->name, NULL, 0, 0);
+			pos += DIR_SIZE(FILE_AT(pos));
+		}
 	}
 
 	return 0;
@@ -118,17 +160,31 @@ static int fs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
 static int fs_open(const char *path, struct fuse_file_info *fi)
 {
-	int file;
+	int file, ret;
 
-	for (int i = 1; i < strlen(path); ++i)
-		if (path[i] > '9' || path[i] < '0')
+	// check if file exists
+	if (options.version == 0) {
+		for (int i = 1; i < strlen(path); ++i)
+			if (path[i] > '9' || path[i] < '0')
+				return -ENOENT;
+
+		if (strlen(path) > 1)
+			file = atoi(path+1);
+
+		if (file < 0 || file >= num_files)
 			return -ENOENT;
-
-	if (strlen(path) > 1)
-		file = atoi(path+1);
-
-	if (file < 0 || file >= num_files)
-		return -ENOENT;
+	} else {
+		ret = -ENOENT;
+		for (int i = 0, pos = 0; i < num_files; ++i) {
+			if (strcmp(FILE_AT(pos)->name, path + 1) == 0) {
+				ret = 0;
+				break;
+			}
+			pos += DIR_SIZE(FILE_AT(pos));
+		}
+		if (ret != 0)
+			return ret;
+	}
 
 	if ((fi->flags & O_ACCMODE) != O_RDONLY)
 		return -EACCES;
@@ -140,34 +196,44 @@ static int fs_read(const char *path, char *buf, size_t size, off_t offset, struc
 {
 	size_t len;
 	(void) fi;
-	int file;
+	int file = 0;
 	FILE *image;
-	/*char tmp[32];*/
+	struct directory *f;
 
-	for (int i = 1; i < strlen(path); ++i)
-		if (path[i] > '9' || path[i] < '0')
+	if (options.version == 0) {
+		for (int i = 1; i < strlen(path); ++i)
+			if (path[i] > '9' || path[i] < '0')
+				return -ENOENT;
+
+		if (strlen(path) > 1)
+			file = atoi(path+1);
+
+		if (file < 0 || file >= num_files)
 			return -ENOENT;
+	} else {
+		int ret = -ENOENT;
+		for (int i = 0; i < num_files; ++i) {
+			if (strcmp(FILE_AT(file)->name, path + 1) == 0) {
+				ret = 0;
+				break;
+			}
+			file += DIR_SIZE(FILE_AT(file));
+		}
+		if (ret != 0)
+			return ret;
+	}
 
-	if (strlen(path) > 1)
-		file = atoi(path+1);
+	f = options.version == 0 ? &file_dir[file] : FILE_AT(file);
 
-	if (file < 0 || file >= num_files)
-		return -ENOENT;
+	len = f->size * SECTOR_SIZE;
 
-	/*sprintf(tmp, "%d %d\n", file_dir[file].location, file_dir[file].size);*/
-
-	/*len = strlen(tmp);*/
-	len = file_dir[file].size * SECTOR_SIZE;
 	if (offset < len) {
 		if (offset + size > len)
 			size = len - offset;
 
-		/*memcpy(buf, tmp + offset, size);*/
-		/*size = strlen(buf);*/
-
 		image = fopen(options.image, "rb");
 
-		fseek(image, file_dir[file].location * SECTOR_SIZE + offset, SEEK_SET);
+		fseek(image, f->location * SECTOR_SIZE + offset, SEEK_SET);
 		fread(buf, size, 1, image);
 
 		fclose(image);
@@ -193,7 +259,7 @@ static void show_help(const char *progname)
 int main(int argc, char *argv[])
 {
 	int ret, len;
-	char cwd[PATH_MAX], def_file[] = "/image";
+	char cwd[PATH_MAX], def_file[] = "/image", name[] = "inf2201fs";
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
 
 	if (getcwd(cwd, sizeof(cwd)) == NULL)
@@ -205,6 +271,8 @@ int main(int argc, char *argv[])
 
 	options.image = strdup(cwd);
 	options.version = -1;
+
+	argv[0] = name;
 
 	if (fuse_opt_parse(&args, &options, option_spec, NULL) == -1)
 		return 1;
