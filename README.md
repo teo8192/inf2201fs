@@ -2,19 +2,28 @@
 
 This is a file system implemented using FUSE to browse a specific type of image files used in the INF-2201 course at UiT.
 
-## Dependecies
+## Dependencies
 
 [libfuse](https://github.com/libfuse/libfuse) (version 3).
+
+## Install
+
+If you want to install it, run
+
+```sh
+make install
+```
+
+You might need to have superuser privileges.
 
 ## Usage
 
 ```sh
-mkdir mnt && make mnt
-cd mnt
+mount.inf2201fs mountpoint
 ```
 
-This is assuming you are in a directory with the image file present.
-Default image file name is `image`.
+The default image file is `image`.
+You may specify another one with the `--image` flag.
 
-When the binary is built, you can also mount with `./inf2201fs [--image=[imagename]] mountpoint`.
-It may be unmounted with `fusermount -u [mountpoint]`.
+To unmount the filesystem, use either `fusermount -u [mountpoint]` or `umount [mountpoint]`.
+It is recommended to use `fusermount -u`.
