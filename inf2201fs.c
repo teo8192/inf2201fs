@@ -1,3 +1,7 @@
+// This program can be distributed under the terms of the GNU GPLv2.
+// See the GPL2.txt file for licence.
+// This program is a modified version of the hello.c example program from libfuse 
+
 #define FUSE_USE_VERSION 31
 
 #include <fuse.h>
