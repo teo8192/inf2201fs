@@ -324,7 +324,13 @@ static const struct fuse_operations fs_oper = {
 
 static void show_help(const char *progname)
 {
-	printf("This is the help you can get from %s.", progname);
+	printf("usage: %s [mountpoint]\n"
+		   "\t--image=[imagefile]\n"
+		   "\t\tDefault value for imagefile is 'image'.\n"
+		   "\t--version=[version]\n"
+		   "\t\tThe version is mostly autodetected."
+		   "You can force it to use a specific one with this option."
+		   "Supported versions: 0, 1.\n", progname);
 }
 
 int main(int argc, char *argv[])
@@ -354,9 +360,9 @@ int main(int argc, char *argv[])
 		show_help(argv[0]);
 		assert(fuse_opt_add_arg(&args, "--help") == 0);
 		args.argv[0][0] = '\0';
+	} else {
+		printf("Image: %s\n", options.image);
 	}
-
-	printf("Image: %s\n", options.image);
 
 	ret = fuse_main(args.argc, args.argv, &fs_oper, NULL);
 	fuse_opt_free_args(&args);
